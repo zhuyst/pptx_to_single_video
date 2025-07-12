@@ -10,6 +10,7 @@ from tkinter import ttk, filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import uuid
 import tempfile
+import pythoncom
 
 
 class PPTToVideoConverter:
@@ -21,6 +22,12 @@ class PPTToVideoConverter:
     def export_single_slide_to_video(self, slide_index, output_wmv, progress_callback=None):
         """导出单个幻灯片为视频"""
         try:
+            # 确保COM库已初始化（可能在不同线程中）
+            try:
+                pythoncom.CoInitialize()
+            except:
+                pass
+            
             powerpoint = self.prs.Application
             single_prs = powerpoint.Presentations.Add()
             self.prs.Slides(slide_index).Copy()
@@ -41,10 +48,8 @@ class PPTToVideoConverter:
             while single_prs.CreateVideoStatus != 3:
                 if not self.is_converting:  # 检查是否被取消
                     break
-                if progress_callback:
-                    status = single_prs.CreateVideoStatus
-                    progress_callback(f"正在处理第{slide_index}页 (状态: {status})")
-                time.sleep(1)
+                # 减少状态更新频率，避免覆盖主要进度信息
+                time.sleep(2)
                 
             single_prs.Close()
             if os.path.exists(temp_pptx):
@@ -60,6 +65,9 @@ class PPTToVideoConverter:
     def convert_ppt_to_videos(self, pptx_path, progress_callback=None, completion_callback=None):
         """转换PPT为视频"""
         try:
+            # 初始化COM库
+            pythoncom.CoInitialize()
+            
             self.is_converting = True
             
             # 规范化输入路径
@@ -82,7 +90,7 @@ class PPTToVideoConverter:
             
             # 启动PowerPoint应用程序
             try:
-                self.powerpoint = win32com.client.Dispatch('PowerPoint.Application')
+                self.powerpoint = win32com.client.Dispatch('PowerPoint.Application.16')
                 self.powerpoint.Visible = 1
             except Exception as e:
                 raise Exception(f"无法启动PowerPoint应用程序: {e}")
@@ -109,7 +117,7 @@ class PPTToVideoConverter:
                 wmv_path = os.path.normpath(os.path.abspath(wmv_path))
                 
                 if progress_callback:
-                    progress_callback(f"正在导出第{i}页为视频...")
+                    progress_callback(f"正在导出第{i}页为视频... ({i}/{slide_count})")
                 
                 if self.export_single_slide_to_video(i, wmv_path, progress_callback):
                     success_count += 1
@@ -117,7 +125,7 @@ class PPTToVideoConverter:
                         progress_callback(f"第{i}页导出完成 ({success_count}/{slide_count})")
                 else:
                     if progress_callback:
-                        progress_callback(f"第{i}页导出失败")
+                        progress_callback(f"第{i}页导出失败 ({i}/{slide_count})")
             
             self.cleanup()
             
@@ -132,6 +140,12 @@ class PPTToVideoConverter:
             self.cleanup()
             if completion_callback:
                 completion_callback(None, 0, 0)
+        finally:
+            # 确保COM库被正确反初始化
+            try:
+                pythoncom.CoUninitialize()
+            except:
+                pass
     
     def cleanup(self):
         """清理资源"""
@@ -160,12 +174,14 @@ class PPTToVideoGUI:
     def __init__(self):
         self.root = TkinterDnD.Tk()
         self.root.title("PPT转视频工具")
-        self.root.geometry("600x400")
+        self.root.geometry("600x520")
         self.root.resizable(False, False)
         
         self.converter = PPTToVideoConverter()
         self.selected_file = tk.StringVar()
         self.conversion_thread = None
+        self.total_slides = 0
+        self.current_slide = 0
         
         self.setup_ui()
         self.setup_drag_drop()
@@ -198,9 +214,21 @@ class PPTToVideoGUI:
                               font=("微软雅黑", 9), foreground="gray")
         drop_label.grid(row=1, column=0, columnspan=2, pady=(5, 0))
         
+        # 重要提示
+        warning_frame = ttk.LabelFrame(main_frame, text="⚠️ 重要提示", padding="10")
+        warning_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        warning_text = ttk.Label(warning_frame, 
+                                text="转换过程中请勿进行复制粘贴操作（Ctrl+C、Ctrl+V）\n"
+                                     "否则可能导致转换失败！转换期间请耐心等待。", 
+                                font=("微软雅黑", 10), 
+                                foreground="red",
+                                justify=tk.CENTER)
+        warning_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        
         # 转换控制区域
         control_frame = ttk.LabelFrame(main_frame, text="转换控制", padding="10")
-        control_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        control_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 开始导出按钮
         self.start_btn = ttk.Button(control_frame, text="开始导出", command=self.start_conversion)
@@ -212,7 +240,7 @@ class PPTToVideoGUI:
         
         # 进度显示区域
         progress_frame = ttk.LabelFrame(main_frame, text="转换进度", padding="10")
-        progress_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        progress_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 进度条
         self.progress_var = tk.IntVar()
@@ -224,9 +252,15 @@ class PPTToVideoGUI:
         progress_label = ttk.Label(progress_frame, textvariable=self.progress_text)
         progress_label.grid(row=1, column=0, sticky=(tk.W, tk.E))
         
+        # 转换期间提醒文本
+        self.converting_warning = tk.StringVar(value="")
+        warning_label = ttk.Label(progress_frame, textvariable=self.converting_warning, 
+                                 font=("微软雅黑", 9, "bold"), foreground="red")
+        warning_label.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        
         # 状态区域
         status_frame = ttk.Frame(main_frame)
-        status_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E))
+        status_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E))
         
         self.status_text = tk.StringVar(value="就绪")
         status_label = ttk.Label(status_frame, textvariable=self.status_text, foreground="blue")
@@ -235,6 +269,7 @@ class PPTToVideoGUI:
         # 配置网格权重
         main_frame.columnconfigure(1, weight=1)
         file_frame.columnconfigure(0, weight=1)
+        warning_frame.columnconfigure(0, weight=1)
         progress_frame.columnconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -289,11 +324,28 @@ class PPTToVideoGUI:
             messagebox.showerror("错误", f"无法访问文件，可能是路径或文件名包含特殊字符: {e}")
             return
         
+        # 重要提醒：转换过程中不要使用复制粘贴
+        result = messagebox.askokcancel("重要提醒", 
+                                      "⚠️ 转换过程中请务必注意：\n\n"
+                                      "1. 请勿进行任何复制粘贴操作（Ctrl+C、Ctrl+V）\n"
+                                      "2. 请勿关闭PowerPoint程序\n"
+                                      "3. 转换期间请耐心等待，不要操作电脑\n\n"
+                                      "违反以上操作可能导致转换失败！\n\n"
+                                      "点击'确定'开始转换，点击'取消'中止操作。",
+                                      icon='warning')
+        if not result:
+            return
+        
         # 更新UI状态
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.progress_var.set(0)
         self.status_text.set("正在转换...")
+        # 显示转换期间的警告提示
+        self.converting_warning.set("⚠️ 转换进行中，请勿进行复制粘贴操作！")
+        # 重置进度计数器
+        self.total_slides = 0
+        self.current_slide = 0
         
         # 在新线程中执行转换
         self.conversion_thread = threading.Thread(
@@ -308,6 +360,11 @@ class PPTToVideoGUI:
         self.converter.stop_conversion()
         self.reset_ui()
         self.status_text.set("转换已停止")
+        # 清除警告提示
+        self.converting_warning.set("")
+        # 重置进度计数器
+        self.total_slides = 0
+        self.current_slide = 0
     
     def update_progress(self, message):
         """更新进度"""
@@ -320,14 +377,23 @@ class PPTToVideoGUI:
                 progress_part = message[message.find("("):message.find(")")+1]
                 if "/" in progress_part:
                     current, total = progress_part.strip("()").split("/")
+                    self.current_slide = int(current)
+                    self.total_slides = int(total)
                     progress_percent = int((int(current) / int(total)) * 100)
                     self.root.after(0, lambda: self.progress_var.set(progress_percent))
             except:
                 pass
+        
+        # 如果消息包含"导出完成"，更新进度显示
+        if "导出完成" in message and self.total_slides > 0:
+            progress_text = f"{message} - 总进度: {self.current_slide}/{self.total_slides} ({int(self.current_slide/self.total_slides*100)}%)"
+            self.root.after(0, lambda: self.progress_text.set(progress_text))
     
     def conversion_complete(self, output_dir, success_count, total_count):
         """转换完成"""
         self.root.after(0, lambda: self.reset_ui())
+        # 清除警告提示
+        self.root.after(0, lambda: self.converting_warning.set(""))
         
         if output_dir and success_count > 0:
             self.root.after(0, lambda: self.progress_var.set(100))
