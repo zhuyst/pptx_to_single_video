@@ -1,3 +1,5 @@
+# -*- coding: UTF-8 -*-
+
 import os
 import time
 import threading
@@ -6,6 +8,8 @@ import win32com.client
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
+import uuid
+import tempfile
 
 
 class PPTToVideoConverter:
@@ -21,11 +25,22 @@ class PPTToVideoConverter:
             single_prs = powerpoint.Presentations.Add()
             self.prs.Slides(slide_index).Copy()
             single_prs.Slides.Paste()
-            temp_pptx = os.path.abspath(f"temp_slide_{slide_index}.pptx")
+            
+            # 使用临时目录和英文文件名避免中文路径问题
+            temp_dir = tempfile.gettempdir()
+            temp_filename = f"temp_slide_{uuid.uuid4().hex}.pptx"
+            temp_pptx = os.path.join(temp_dir, temp_filename)
+            temp_pptx = os.path.normpath(temp_pptx)
+            
+            # 确保输出路径格式正确
+            output_wmv = os.path.normpath(os.path.abspath(output_wmv))
+            
             single_prs.SaveAs(temp_pptx)
             single_prs.CreateVideo(output_wmv, False, 5, 720, 30, 100)
             
             while single_prs.CreateVideoStatus != 3:
+                if not self.is_converting:  # 检查是否被取消
+                    break
                 if progress_callback:
                     status = single_prs.CreateVideoStatus
                     progress_callback(f"正在处理第{slide_index}页 (状态: {status})")
@@ -33,7 +48,10 @@ class PPTToVideoConverter:
                 
             single_prs.Close()
             if os.path.exists(temp_pptx):
-                os.remove(temp_pptx)
+                try:
+                    os.remove(temp_pptx)
+                except:
+                    pass
             return True
         except Exception as e:
             print(f"导出第{slide_index}页时出错: {e}")
@@ -44,17 +62,37 @@ class PPTToVideoConverter:
         try:
             self.is_converting = True
             
+            # 规范化输入路径
+            pptx_path = os.path.normpath(os.path.abspath(pptx_path))
+            
+            # 检查文件是否存在
+            if not os.path.exists(pptx_path):
+                raise FileNotFoundError(f"文件不存在: {pptx_path}")
+            
             # 根据pptx文件名创建输出目录
             pptx_name = os.path.splitext(os.path.basename(pptx_path))[0]
             output_dir = pptx_name
+            
+            # 确保输出目录路径正确
+            output_dir = os.path.normpath(os.path.abspath(output_dir))
             os.makedirs(output_dir, exist_ok=True)
             
             if progress_callback:
                 progress_callback("正在打开PowerPoint...")
             
-            self.powerpoint = win32com.client.Dispatch('PowerPoint.Application.16')
-            self.powerpoint.Visible = 1
-            self.prs = self.powerpoint.Presentations.Open(pptx_path, WithWindow=False)
+            # 启动PowerPoint应用程序
+            try:
+                self.powerpoint = win32com.client.Dispatch('PowerPoint.Application')
+                self.powerpoint.Visible = 1
+            except Exception as e:
+                raise Exception(f"无法启动PowerPoint应用程序: {e}")
+            
+            # 打开PPT文件
+            try:
+                self.prs = self.powerpoint.Presentations.Open(pptx_path, WithWindow=False)
+            except Exception as e:
+                raise Exception(f"无法打开PPT文件: {e}\n文件路径: {pptx_path}")
+            
             slide_count = self.prs.Slides.Count
             
             if progress_callback:
@@ -65,7 +103,10 @@ class PPTToVideoConverter:
                 if not self.is_converting:  # 检查是否被取消
                     break
                     
-                wmv_path = os.path.abspath(os.path.join(output_dir, f"{pptx_name}_{i}.wmv"))
+                # 使用英文文件名避免中文路径问题
+                wmv_filename = f"{pptx_name}_{i}.wmv"
+                wmv_path = os.path.join(output_dir, wmv_filename)
+                wmv_path = os.path.normpath(os.path.abspath(wmv_path))
                 
                 if progress_callback:
                     progress_callback(f"正在导出第{i}页为视频...")
@@ -84,8 +125,10 @@ class PPTToVideoConverter:
                 completion_callback(output_dir, success_count, slide_count)
                 
         except Exception as e:
+            error_msg = f"转换过程中出错: {str(e)}"
+            print(error_msg)
             if progress_callback:
-                progress_callback(f"转换过程中出错: {e}")
+                progress_callback(error_msg)
             self.cleanup()
             if completion_callback:
                 completion_callback(None, 0, 0)
@@ -95,10 +138,15 @@ class PPTToVideoConverter:
         try:
             if self.prs:
                 self.prs.Close()
+        except:
+            pass
+        
+        try:
             if self.powerpoint:
                 self.powerpoint.Quit()
         except:
             pass
+        
         self.prs = None
         self.powerpoint = None
         self.is_converting = False
@@ -202,6 +250,8 @@ class PPTToVideoGUI:
         if files:
             file_path = files[0]
             if file_path.lower().endswith('.pptx'):
+                # 规范化路径
+                file_path = os.path.normpath(file_path)
                 self.selected_file.set(file_path)
                 self.status_text.set("文件已选择")
             else:
@@ -214,6 +264,8 @@ class PPTToVideoGUI:
             filetypes=[("PowerPoint文件", "*.pptx"), ("所有文件", "*.*")]
         )
         if file_path:
+            # 规范化路径
+            file_path = os.path.normpath(file_path)
             self.selected_file.set(file_path)
             self.status_text.set("文件已选择")
     
@@ -223,8 +275,18 @@ class PPTToVideoGUI:
             messagebox.showerror("错误", "请先选择PPT文件")
             return
         
-        if not os.path.exists(self.selected_file.get()):
+        file_path = os.path.normpath(self.selected_file.get())
+        if not os.path.exists(file_path):
             messagebox.showerror("错误", "选择的文件不存在")
+            return
+        
+        # 检查路径和文件名
+        try:
+            # 测试路径是否可以正常访问
+            with open(file_path, 'rb') as f:
+                pass
+        except Exception as e:
+            messagebox.showerror("错误", f"无法访问文件，可能是路径或文件名包含特殊字符: {e}")
             return
         
         # 更新UI状态
@@ -236,7 +298,7 @@ class PPTToVideoGUI:
         # 在新线程中执行转换
         self.conversion_thread = threading.Thread(
             target=self.converter.convert_ppt_to_videos,
-            args=(self.selected_file.get(), self.update_progress, self.conversion_complete)
+            args=(file_path, self.update_progress, self.conversion_complete)
         )
         self.conversion_thread.daemon = True
         self.conversion_thread.start()
@@ -289,7 +351,8 @@ class PPTToVideoGUI:
     def open_output_folder(self, output_dir):
         """打开输出文件夹"""
         try:
-            os.startfile(os.path.abspath(output_dir))
+            output_dir = os.path.normpath(os.path.abspath(output_dir))
+            os.startfile(output_dir)
         except Exception as e:
             messagebox.showerror("错误", f"无法打开文件夹: {e}")
     
