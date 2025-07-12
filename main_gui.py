@@ -19,7 +19,7 @@ class PPTToVideoConverter:
         self.powerpoint = None
         self.is_converting = False
         
-    def export_single_slide_to_video(self, slide_index, output_wmv, progress_callback=None):
+    def export_single_slide_to_video(self, slide_index, output_wmv, default_slide_duration=5, vert_resolution=1080, frames_per_second=30, progress_callback=None):
         """导出单个幻灯片为视频"""
         try:
             # 确保COM库已初始化（可能在不同线程中）
@@ -43,7 +43,13 @@ class PPTToVideoConverter:
             output_wmv = os.path.normpath(os.path.abspath(output_wmv))
             
             single_prs.SaveAs(temp_pptx)
-            single_prs.CreateVideo(output_wmv, False, 5, 720, 30, 100)
+
+            useTimingsAndNarrations = True
+            defaultSlideDuration = default_slide_duration
+            vertResolution = vert_resolution
+            framesPerSecond = frames_per_second
+            quality = 100
+            single_prs.CreateVideo(output_wmv, useTimingsAndNarrations, defaultSlideDuration, vertResolution, framesPerSecond, quality)
             
             while single_prs.CreateVideoStatus != 3:
                 if not self.is_converting:  # 检查是否被取消
@@ -62,7 +68,7 @@ class PPTToVideoConverter:
             print(f"导出第{slide_index}页时出错: {e}")
             return False
     
-    def convert_ppt_to_videos(self, pptx_path, progress_callback=None, completion_callback=None):
+    def convert_ppt_to_videos(self, pptx_path, default_slide_duration=5, vert_resolution=1080, frames_per_second=30, progress_callback=None, completion_callback=None):
         """转换PPT为视频"""
         try:
             # 初始化COM库
@@ -119,7 +125,7 @@ class PPTToVideoConverter:
                 if progress_callback:
                     progress_callback(f"正在导出第{i}页为视频... ({i}/{slide_count})")
                 
-                if self.export_single_slide_to_video(i, wmv_path, progress_callback):
+                if self.export_single_slide_to_video(i, wmv_path, default_slide_duration, vert_resolution, frames_per_second, progress_callback):
                     success_count += 1
                     if progress_callback:
                         progress_callback(f"第{i}页导出完成 ({success_count}/{slide_count})")
@@ -174,7 +180,7 @@ class PPTToVideoGUI:
     def __init__(self):
         self.root = TkinterDnD.Tk()
         self.root.title("PPT转视频工具")
-        self.root.geometry("600x520")
+        self.root.geometry("600x620")
         self.root.resizable(False, False)
         
         self.converter = PPTToVideoConverter()
@@ -182,6 +188,11 @@ class PPTToVideoGUI:
         self.conversion_thread = None
         self.total_slides = 0
         self.current_slide = 0
+        
+        # 添加配置参数变量
+        self.default_slide_duration = tk.StringVar(value="5")
+        self.vert_resolution = tk.StringVar(value="1080")
+        self.frames_per_second = tk.StringVar(value="30")
         
         self.setup_ui()
         self.setup_drag_drop()
@@ -214,9 +225,38 @@ class PPTToVideoGUI:
                               font=("微软雅黑", 9), foreground="gray")
         drop_label.grid(row=1, column=0, columnspan=2, pady=(5, 0))
         
+        # 配置参数区域
+        config_frame = ttk.LabelFrame(main_frame, text="视频配置", padding="10")
+        config_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 默认幻灯片持续时间
+        duration_label = ttk.Label(config_frame, text="放映每张幻灯片的秒数:")
+        duration_label.grid(row=0, column=0, padx=(0, 10), sticky=tk.W)
+        self.duration_entry = ttk.Entry(config_frame, textvariable=self.default_slide_duration, width=10)
+        self.duration_entry.grid(row=0, column=1, padx=(0, 20), sticky=tk.W)
+        
+        # 视频分辨率
+        resolution_label = ttk.Label(config_frame, text="视频分辨率:")
+        resolution_label.grid(row=0, column=2, padx=(0, 10), sticky=tk.W)
+        self.resolution_combo = ttk.Combobox(config_frame, textvariable=self.vert_resolution, 
+                                           values=["720", "1080"], state="readonly", width=8)
+        self.resolution_combo.grid(row=0, column=3, padx=(0, 20), sticky=tk.W)
+        
+        # 帧率
+        fps_label = ttk.Label(config_frame, text="帧率(FPS):")
+        fps_label.grid(row=1, column=0, padx=(0, 10), sticky=tk.W, pady=(10, 0))
+        self.fps_entry = ttk.Entry(config_frame, textvariable=self.frames_per_second, width=10)
+        self.fps_entry.grid(row=1, column=1, padx=(0, 20), sticky=tk.W, pady=(10, 0))
+        
+        # 参数说明
+        config_help_label = ttk.Label(config_frame, 
+                                     text="说明: 放映每张幻灯片的秒数和帧率必须为大于等于0的数字",
+                                     font=("微软雅黑", 8), foreground="gray")
+        config_help_label.grid(row=2, column=0, columnspan=4, pady=(5, 0), sticky=tk.W)
+        
         # 重要提示
         warning_frame = ttk.LabelFrame(main_frame, text="⚠️ 重要提示", padding="10")
-        warning_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        warning_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         warning_text = ttk.Label(warning_frame, 
                                 text="转换过程中请勿进行复制粘贴操作（Ctrl+C、Ctrl+V）\n"
@@ -228,7 +268,7 @@ class PPTToVideoGUI:
         
         # 转换控制区域
         control_frame = ttk.LabelFrame(main_frame, text="转换控制", padding="10")
-        control_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        control_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 开始导出按钮
         self.start_btn = ttk.Button(control_frame, text="开始导出", command=self.start_conversion)
@@ -240,7 +280,7 @@ class PPTToVideoGUI:
         
         # 进度显示区域
         progress_frame = ttk.LabelFrame(main_frame, text="转换进度", padding="10")
-        progress_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        progress_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # 进度条
         self.progress_var = tk.IntVar()
@@ -260,7 +300,7 @@ class PPTToVideoGUI:
         
         # 状态区域
         status_frame = ttk.Frame(main_frame)
-        status_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E))
+        status_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E))
         
         self.status_text = tk.StringVar(value="就绪")
         status_label = ttk.Label(status_frame, textvariable=self.status_text, foreground="blue")
@@ -304,6 +344,30 @@ class PPTToVideoGUI:
             self.selected_file.set(file_path)
             self.status_text.set("文件已选择")
     
+    def validate_config(self):
+        """验证配置参数"""
+        try:
+            # 验证默认幻灯片持续时间
+            duration = float(self.default_slide_duration.get())
+            if duration < 0:
+                raise ValueError("默认幻灯片持续时间必须大于等于0")
+            
+            # 验证帧率
+            fps = float(self.frames_per_second.get())
+            if fps < 0:
+                raise ValueError("帧率必须大于等于0")
+            
+            # 验证分辨率
+            resolution = int(self.vert_resolution.get())
+            if resolution not in [720, 1080]:
+                raise ValueError("分辨率必须为720或1080")
+            
+            return True, duration, resolution, fps
+            
+        except ValueError as e:
+            messagebox.showerror("参数错误", str(e))
+            return False, None, None, None
+    
     def start_conversion(self):
         """开始转换"""
         if not self.selected_file.get():
@@ -313,6 +377,11 @@ class PPTToVideoGUI:
         file_path = os.path.normpath(self.selected_file.get())
         if not os.path.exists(file_path):
             messagebox.showerror("错误", "选择的文件不存在")
+            return
+        
+        # 验证配置参数
+        is_valid, duration, resolution, fps = self.validate_config()
+        if not is_valid:
             return
         
         # 检查路径和文件名
@@ -350,7 +419,7 @@ class PPTToVideoGUI:
         # 在新线程中执行转换
         self.conversion_thread = threading.Thread(
             target=self.converter.convert_ppt_to_videos,
-            args=(file_path, self.update_progress, self.conversion_complete)
+            args=(file_path, duration, resolution, fps, self.update_progress, self.conversion_complete)
         )
         self.conversion_thread.daemon = True
         self.conversion_thread.start()
